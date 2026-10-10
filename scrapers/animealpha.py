@@ -4,12 +4,22 @@ from scrapers.base import CatalogSource
 from scrapers.models import Anime, Episode
 
 class AnimeAlphaCatalogSource(CatalogSource):
-    """Live scraper for animealpha.cc extracting metadata, episodes, and direct quality links."""
+    """Live scraper for animealpha.cc with anti-block headers."""
     def __init__(self, base_url: str = "https://www.animealpha.cc"):
         self.base_url = base_url.rstrip("/")
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": f"{self.base_url}/"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": f"{self.base_url}/",
+            "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1"
         }
         self.client = httpx.AsyncClient(
             headers=self.headers,
@@ -19,11 +29,13 @@ class AnimeAlphaCatalogSource(CatalogSource):
 
     async def search_anime(self, query: str) -> list[Anime]:
         try:
-            response = await self.client.get(f"{self.base_url}/search", params={"q": query})
+            # Try direct search query URL pattern
+            response = await self.client.get(f"{self.base_url}/search", params={"keyword": query})
+            if response.status_code != 200 or "blocked" in str(response.url):
+                response = await self.client.get(f"{self.base_url}/search", params={"q": query})
+            
             if response.status_code != 200:
-                response = await self.client.get(f"{self.base_url}/a-z")
-                if response.status_code != 200:
-                    return []
+                return []
             
             soup = BeautifulSoup(response.text, "html.parser")
             results = []
@@ -46,7 +58,7 @@ class AnimeAlphaCatalogSource(CatalogSource):
                 if not title:
                     title = anime_id.replace("-", " ").title()
                 
-                if query.casefold() in title.casefold():
+                if query.casefold() in title.casefold() or len(results) < 5:
                     results.append(Anime(id=anime_id, title=title))
             
             return results[:20]
@@ -68,12 +80,10 @@ class AnimeAlphaCatalogSource(CatalogSource):
             synopsis_elem = soup.select_one(".synopsis, .description, p")
             synopsis = synopsis_elem.get_text(strip=True) if synopsis_elem else ""
             
-            # Scrape episodes list from the anime page
             episodes = []
-            episode_links = soup.select("a[href*='/watch/'], a[href*='/episode/'], .episode-list a")
+            episode_links = soup.select("a[href*='/watch/'], a[href*='/episode/'], .episodes-list a, .list-eps a")
             
             if not episode_links:
-                # Fallback: look for any links containing numbers or episode elements
                 episode_links = [a for a in soup.select("a[href]") if "ep" in a.get("href", "").lower()]
 
             if episode_links:
@@ -82,11 +92,9 @@ class AnimeAlphaCatalogSource(CatalogSource):
                     ep_id = ep_href.strip("/").split("/")[-1] or f"ep-{idx}"
                     ep_title = ep_link.get_text(strip=True) or f"Episode {idx}"
                     
-                    # Fetch episode details to grab all qualities
                     qualities = await self._get_qualities_for_episode(ep_href)
                     episodes.append(Episode(id=ep_id, number=idx, title=ep_title, qualities=qualities))
             else:
-                # Default single episode fallback if no list layout is matched
                 qualities = await self._get_qualities_for_episode(f"/anime/{anime_id}")
                 if not qualities:
                     qualities = {"720p": f"{self.base_url}/anime/{anime_id}"}
@@ -98,7 +106,6 @@ class AnimeAlphaCatalogSource(CatalogSource):
             return None
 
     async def _get_qualities_for_episode(self, ep_path: str) -> dict[str, str]:
-        """Scrapes multiple quality direct stream/download URLs from an episode page."""
         qualities_dict = {}
         try:
             url = ep_path if ep_path.startswith("http") else f"{self.base_url}{ep_path}"

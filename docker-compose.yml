@@ -1,0 +1,10 @@
+services:
+  bot:
+    build: .
+    container_name: anime-telegram-bot
+    restart: unless-stopped
+    env_file: .env
+    network_mode: host
+    volumes:
+      - ./downloads:/app/downloads
+      - ./data:/app/data

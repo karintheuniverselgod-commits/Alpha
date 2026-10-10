@@ -1,0 +1,21 @@
+{
+  "anime": [
+    {
+      "id": "sample",
+      "title": "Sample Anime",
+      "episodes": [
+        {
+          "id": "ep1",
+          "number": 1,
+          "title": "Episode 1",
+          "qualities": {
+            "360p": "https://your-authorized-host.example/ep1-360.mp4",
+            "480p": "https://your-authorized-host.example/ep1-480.mp4",
+            "720p": "https://your-authorized-host.example/ep1-720.mp4",
+            "1080p": "https://your-authorized-host.example/ep1-1080.mp4"
+          }
+        }
+      ]
+    }
+  ]
+}

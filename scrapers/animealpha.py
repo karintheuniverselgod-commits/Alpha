@@ -4,7 +4,7 @@ from scrapers.base import CatalogSource
 from scrapers.models import Anime, Episode
 
 class AnimeAlphaCatalogSource(CatalogSource):
-    """Accurate scraper for animealpha.cc resolving download landing pages to direct video streams."""
+    """Accurate scraper for animealpha.cc supporting multi-quality buttons and direct media extraction."""
     def __init__(self, base_url: str = "https://www.animealpha.cc"):
         self.base_url = base_url.rstrip("/")
         self.client = AsyncSession(impersonate="chrome", timeout=15.0)
@@ -47,32 +47,6 @@ class AnimeAlphaCatalogSource(CatalogSource):
             print(f"Error searching animealpha: {e}")
             return []
 
-    async def _resolve_direct_link(self, landing_url: str) -> str:
-        """Visits the animealpha download landing page and extracts the actual media file link."""
-        try:
-            resp = await self.client.get(landing_url)
-            if resp.status_code != 200:
-                return landing_url
-            
-            soup = BeautifulSoup(resp.text, "html.parser")
-            
-            # Look for direct video files or CDN links inside the landing page
-            for a in soup.select("a[href]"):
-                href = a.get("href", "")
-                if any(ext in href.lower() for ext in [".mp4", ".mkv", ".m3u8", "cdn", "storage", "dl="]):
-                    return href if href.startswith("http") else f"{self.base_url}{href}"
-            
-            # Check for embedded video source tags
-            source = soup.select_one("video source, source")
-            if source:
-                src = source.get("src", "")
-                if src:
-                    return src if src.startswith("http") else f"{self.base_url}{src}"
-            
-            return landing_url
-        except Exception:
-            return landing_url
-
     async def get_anime(self, anime_id: str) -> Anime | None:
         try:
             response = await self.client.get(f"{self.base_url}/anime/{anime_id}")
@@ -88,65 +62,95 @@ class AnimeAlphaCatalogSource(CatalogSource):
             synopsis = synopsis_elem.get_text(strip=True) if synopsis_elem else ""
             
             episodes = []
-            links = soup.select("a[href]")
-            ep_map = {}
             
-            # Collect download landing links
-            raw_qualities = {}
-            for a in links:
-                href = a.get("href", "")
-                text = a.get_text(strip=True)
-                
-                if "/download/" in href or "download" in href.lower():
+            # Find all episode or watch links on the anime page
+            episode_links = soup.select("a[href*='/watch/'], a[href*='/episode/'], .episodes-list a, .list-eps a")
+            if not episode_links:
+                episode_links = [a for a in soup.select("a[href]") if "ep" in a.get("href", "").lower()]
+
+            if episode_links:
+                for idx, ep_link in enumerate(episode_links, start=1):
+                    ep_href = ep_link.get("href", "")
+                    ep_id = ep_href.strip("/").split("/")[-1] or f"ep-{idx}"
+                    ep_title = ep_link.get_text(strip=True) or f"Episode {idx}"
+                    
+                    qualities = await self._get_qualities_for_episode(ep_href)
+                    if qualities:
+                        episodes.append(Episode(id=ep_id, number=idx, title=ep_title, qualities=qualities))
+
+            # Fallback if no individual episode pages were matched
+            if not episodes:
+                # Look for direct quality/download options on the main page
+                qualities = {}
+                for a in soup.select("a[href]"):
+                    href = a.get("href", "")
+                    text = a.get_text(strip=True).lower()
                     full_url = href if href.startswith("http") else f"{self.base_url}{href}"
                     
-                    q_name = None
-                    if "1080" in text or "1920" in href or "1080p" in text:
-                        q_name = "1080p"
-                    elif "720" in text or "1280" in href or "720p" in text:
-                        q_name = "720p"
-                    elif "480" in text or "854" in href or "480p" in text:
-                        q_name = "480p"
-                    elif "360" in text or "640" in href or "360p" in text:
-                        q_name = "360p"
-                    
-                    if q_name:
-                        ep_num = 1
-                        for part in href.split("/"):
-                            if part.isdigit():
-                                ep_num = int(part)
-                                break
-                        
-                        if ep_num not in ep_map:
-                            ep_map[ep_num] = {}
-                        ep_map[ep_num][q_name] = full_url
+                    if "1080" in text or "1080p" in text:
+                        qualities["1080p"] = full_url
+                    elif "720" in text or "720p" in text:
+                        qualities["720p"] = full_url
+                    elif "480" in text or "480p" in text:
+                        qualities["480p"] = full_url
+                    elif "360" in text or "360p" in text:
+                        qualities["360p"] = full_url
 
-            # Resolve landing pages to direct media links
-            for ep_num, q_dict in sorted(ep_map.items()):
-                resolved_qualities = {}
-                for q_name, landing_url in q_dict.items():
-                    direct_url = await self._resolve_direct_link(landing_url)
-                    resolved_qualities[q_name] = direct_url
-                
-                episodes.append(Episode(
-                    id=f"ep-{ep_num}",
-                    number=ep_num,
-                    title=f"Episode {ep_num}",
-                    qualities=resolved_qualities
-                ))
+                if not qualities:
+                    qualities["720p"] = f"{self.base_url}/anime/{anime_id}"
 
-            if not episodes:
-                episodes.append(Episode(
-                    id=f"{anime_id}-1",
-                    number=1,
-                    title="Episode 1",
-                    qualities={"720p": f"{self.base_url}/anime/{anime_id}"}
-                ))
+                episodes.append(Episode(id=f"{anime_id}-1", number=1, title="Episode 1", qualities=qualities))
 
             return Anime(id=anime_id, title=title, synopsis=synopsis, episodes=episodes)
         except Exception as e:
             print(f"Error getting anime {anime_id}: {e}")
             return None
+
+    async def _get_qualities_for_episode(self, ep_path: str) -> dict[str, str]:
+        """Extracts available qualities (360p, 480p, 720p, 1080p) from the episode watch page."""
+        qualities_dict = {}
+        try:
+            url = ep_path if ep_path.startswith("http") else f"{self.base_url}{ep_path}"
+            resp = await self.client.get(url)
+            if resp.status_code != 200:
+                return {}
+            
+            ep_soup = BeautifulSoup(resp.text, "html.parser")
+            
+            # Search for quality buttons, links, or video source tags on the watch page
+            for elem in ep_soup.select("a[href], source, video"):
+                href = elem.get("href") or elem.get("src", "")
+                text = elem.get_text(strip=True).lower()
+                
+                if not href:
+                    continue
+                
+                full_url = href if href.startswith("http") else f"{self.base_url}{href}"
+                
+                if "1080" in text or "1080p" in text or "1920" in href:
+                    qualities_dict["1080p"] = full_url
+                elif "720" in text or "720p" in text or "1280" in href:
+                    qualities_dict["720p"] = full_url
+                elif "480" in text or "480p" in text or "854" in href:
+                    qualities_dict["480p"] = full_url
+                elif "360" in text or "360p" in text or "640" in href:
+                    qualities_dict["360p"] = full_url
+
+            # If no specific quality labels found, fallback to any download/stream link on the page
+            if not qualities_dict:
+                for a in ep_soup.select("a[href*='download'], a[href*='stream'], a[href*='file']"):
+                    href = a.get("href", "")
+                    full_url = href if href.startswith("http") else f"{self.base_url}{href}"
+                    qualities_dict["720p"] = full_url
+                    break
+
+            if not qualities_dict:
+                qualities_dict["720p"] = url
+
+        except Exception as e:
+            print(f"Error fetching episode qualities: {e}")
+            
+        return qualities_dict
 
     async def get_episode(self, anime_id: str, episode_id: str) -> Episode | None:
         anime = await self.get_anime(anime_id)

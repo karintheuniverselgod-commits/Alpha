@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     max_download_mb: int = Field(default=1900, ge=1, le=1900)
     download_timeout_seconds: int = Field(default=900, ge=30, le=7200)
     max_concurrent_downloads: int = Field(default=2, ge=1, le=10)
-    catalog_source: str = "demo"
+    catalog_source: str = "animealpha"
     authorized_catalog_json: Path = Path("./data/catalog.json")
 
     @field_validator("catalog_source")

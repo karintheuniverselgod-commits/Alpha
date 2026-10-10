@@ -24,14 +24,14 @@ class DownloadService:
 
         async with self.semaphore:
             try:
-                # Use curl_cffi AsyncSession with Chrome TLS fingerprinting and browser headers
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                     "Referer": "https://www.animealpha.cc/"
                 }
                 
+                # curl_cffi uses allow_redirects=True
                 async with AsyncSession(impersonate="chrome", headers=headers, timeout=300.0) as client:
-                    response = await client.get(url, stream=True, follow_redirects=True)
+                    response = await client.get(url, stream=True, allow_redirects=True)
                     if response.status_code != 200:
                         raise DownloadError(f"Server returned status code {response.status_code}")
                     
@@ -44,7 +44,7 @@ class DownloadService:
                                     raise DownloadError(f"File exceeds the {self.settings.max_download_mb} MB limit.")
                                 output.write(chunk)
                                 
-                if total < 1000000:  # If file is under 1MB, it's an HTML error page or stub
+                if total < 1000000:
                     raise DownloadError("The downloaded file is invalid or empty.")
                     
                 temp.replace(target)

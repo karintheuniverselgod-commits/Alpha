@@ -24,8 +24,9 @@ class Settings(BaseSettings):
     @classmethod
     def validate_source(cls, value: str) -> str:
         value = value.lower().strip()
-        if value not in {"demo", "authorized_json"}:
-            raise ValueError("CATALOG_SOURCE must be demo or authorized_json")
+        # Added "animealpha" to the allowed sources
+        if value not in {"demo", "authorized_json", "animealpha"}:
+            raise ValueError("CATALOG_SOURCE must be demo, authorized_json, or animealpha")
         return value
 
     @field_validator("telegram_api_base")
@@ -36,3 +37,4 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+    

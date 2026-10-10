@@ -17,7 +17,6 @@ class DownloadService:
         pass
 
     async def download(self, url: str, anime_id: str, episode_id: str, quality: str) -> Path:
-        print(f"=== ATTEMPTING TO DOWNLOAD URL: {url} ===")
         name = hashlib.sha256(f"{anime_id}:{episode_id}:{quality}".encode()).hexdigest()[:24]
         target = self.settings.download_dir / f"{name}.mp4"
         temp = target.with_suffix(".part")
@@ -32,7 +31,6 @@ class DownloadService:
                 
                 async with AsyncSession(impersonate="chrome", headers=headers, timeout=300.0) as client:
                     response = await client.get(url, stream=True, allow_redirects=True)
-                    print(f"=== DOWNLOAD STATUS CODE: {response.status_code} ===")
                     if response.status_code != 200:
                         raise DownloadError(f"Server returned status code {response.status_code}")
                     
@@ -45,7 +43,6 @@ class DownloadService:
                                     raise DownloadError(f"File exceeds the {self.settings.max_download_mb} MB limit.")
                                 output.write(chunk)
                                 
-                print(f"=== TOTAL BYTES DOWNLOADED: {total} ===")
                 if total < 1000000:
                     raise DownloadError("The downloaded file is invalid or empty.")
                     

@@ -1,23 +1,14 @@
-import httpx
 from bs4 import BeautifulSoup
+from curl_cffi.requests import AsyncSession
 from scrapers.base import CatalogSource
 from scrapers.models import Anime, Episode
 
 class AnimeAlphaCatalogSource(CatalogSource):
-    """Live scraper for animealpha.cc extracting actual direct download links for all qualities."""
+    """Live scraper for animealpha.cc using browser TLS impersonation to bypass Cloudflare blocks."""
     def __init__(self, base_url: str = "https://www.animealpha.cc"):
         self.base_url = base_url.rstrip("/")
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": f"{self.base_url}/"
-        }
-        self.client = httpx.AsyncClient(
-            headers=self.headers,
-            follow_redirects=True,
-            timeout=15.0
-        )
+        # AsyncSession with browser impersonation bypasses bot detection and TLS fingerprinting
+        self.client = AsyncSession(impersonate="chrome", timeout=15.0)
 
     async def search_anime(self, query: str) -> list[Anime]:
         try:
@@ -72,20 +63,15 @@ class AnimeAlphaCatalogSource(CatalogSource):
             synopsis = synopsis_elem.get_text(strip=True) if synopsis_elem else ""
             
             episodes = []
-            
-            # AnimeAlpha lists download options/episodes directly on the anime page or via episode blocks
-            # Let's check for direct download links or resolution buttons on the page first
             download_links = soup.select("a[href*='/download/']")
             
             if download_links:
-                # Group download links by episode if multiple exist
                 ep_map = {}
                 for a in download_links:
                     href = a.get("href", "")
                     text = a.get_text(strip=True)
                     full_url = href if href.startswith("http") else f"{self.base_url}{href}"
                     
-                    # Determine quality from text or url
                     q_name = "720p"
                     if "1080" in text or "1920" in href:
                         q_name = "1080p"
@@ -96,7 +82,6 @@ class AnimeAlphaCatalogSource(CatalogSource):
                     elif "360" in text or "640" in href:
                         q_name = "360p"
                     
-                    # Extract episode number if possible from url
                     ep_num = 1
                     parts = href.split("/")
                     for p in parts:
@@ -116,7 +101,6 @@ class AnimeAlphaCatalogSource(CatalogSource):
                         qualities=qualities
                     ))
             
-            # Fallback if no direct download links were grouped from the main page
             if not episodes:
                 episode_links = soup.select("a[href*='/watch/'], a[href*='/episode/']")
                 if not episode_links:
@@ -132,7 +116,6 @@ class AnimeAlphaCatalogSource(CatalogSource):
                         episodes.append(Episode(id=ep_id, number=idx, title=ep_title, qualities=qualities))
 
             if not episodes:
-                # Default single episode fallback
                 episodes.append(Episode(id=f"{anime_id}-1", number=1, title="Episode 1", qualities={"720p": f"{self.base_url}/anime/{anime_id}"}))
 
             return Anime(id=anime_id, title=title, synopsis=synopsis, episodes=episodes)
@@ -172,4 +155,4 @@ class AnimeAlphaCatalogSource(CatalogSource):
         if not anime:
             return None
         return next((e for e in anime.episodes if e.id == episode_id), anime.episodes[0] if anime.episodes else None)
-            
+        

@@ -13,8 +13,17 @@ class DownloadService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.semaphore = asyncio.Semaphore(settings.max_concurrent_downloads)
-        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(
-            total=settings.download_timeout_seconds))
+        
+        # Browser headers to pass Cloudflare / anti-bot verification checks
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Referer": "https://www.animealpha.cc/"
+        }
+        
+        self.session = aiohttp.ClientSession(
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=settings.download_timeout_seconds)
+        )
 
     async def close(self):
         await self.session.close()
@@ -52,3 +61,4 @@ class DownloadService:
                 temp.unlink(missing_ok=True)
                 log.warning("Download failed: %s", exc)
                 raise DownloadError("Unable to download this media source. Try again later.") from exc
+                

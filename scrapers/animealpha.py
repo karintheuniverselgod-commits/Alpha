@@ -1,4 +1,3 @@
-import re
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
 from scrapers.base import CatalogSource
@@ -79,7 +78,6 @@ class AnimeAlphaCatalogSource(CatalogSource):
                     ep_id = ep_href.strip("/").split("/")[-1] or f"ep-{idx}"
                     ep_title = ep_link.get_text(strip=True) or f"Episode {idx}"
                     
-                    # Extract true direct video stream URL from the episode page
                     qualities = await self._get_qualities_for_episode(ep_href)
                     if qualities:
                         episodes.append(Episode(id=ep_id, number=idx, title=ep_title, qualities=qualities))
@@ -98,7 +96,7 @@ class AnimeAlphaCatalogSource(CatalogSource):
             return None
 
     async def _get_qualities_for_episode(self, ep_path: str) -> dict[str, str]:
-        """Parses the episode page to extract actual .mp4/.m3u8 direct media stream links."""
+        """Visits the episode page and extracts the true direct video file URL."""
         qualities_dict = {}
         try:
             url = ep_path if ep_path.startswith("http") else f"{self.base_url}{ep_path}"
@@ -106,50 +104,40 @@ class AnimeAlphaCatalogSource(CatalogSource):
             if resp.status_code != 200:
                 return {}
             
-            ep_soup = BeautifulSoup(resp.text, "html.parser")
+            soup = BeautifulSoup(resp.text, "html.parser")
             
-            # 1. Look in video / source tags
-            for source in ep_soup.select("video source, source, video"):
-                src = source.get("src") or source.get("href", "")
-                if src and any(ext in src.lower() for ext in [".mp4", ".m3u8", "m3u8"]):
-                    full_url = src if src.startswith("http") else f"{self.base_url}{src}"
-                    qualities_dict["720p"] = full_url
-
-            # 2. Look in anchor links for direct file downloads
-            if not qualities_dict:
-                for a in ep_soup.select("a[href]"):
-                    href = a.get("href", "")
-                    text = a.get_text(strip=True).lower()
-                    if any(ext in href.lower() for ext in [".mp4", ".m3u8", "dl="]):
-                        full_url = href if href.startswith("http") else f"{self.base_url}{href}"
-                        if "1080" in text or "1080" in href:
-                            qualities_dict["1080p"] = full_url
-                        elif "720" in text or "720" in href:
-                            qualities_dict["720p"] = full_url
-                        elif "480" in text or "480" in href:
-                            qualities_dict["480p"] = full_url
-                        else:
-                            qualities_dict["360p"] = full_url
-
-            # 3. Regex fallback to find direct stream links in scripts or HTML
-            if not qualities_dict:
-                found_urls = re.findall(r'https?://[^\s<>"]+?\.(?:mp4|m3u8)(?:\?[^\s<>"]*)?', resp.text)
-                for u in found_urls:
-                    if "1080" in u:
-                        qualities_dict["1080p"] = u
-                    elif "720" in u:
-                        qualities_dict["720p"] = u
-                    elif "480" in u:
-                        qualities_dict["480p"] = u
+            # Look for direct video source tags, download buttons, or storage links
+            for a in soup.select("a[href], source, video"):
+                href = a.get("href") or a.get("src", "")
+                text = a.get_text(strip=True).lower()
+                
+                if not href:
+                    continue
+                
+                full_url = href if href.startswith("http") else f"{self.base_url}{href}"
+                
+                if any(ext in href.lower() for ext in [".mp4", ".mkv", ".m3u8", "dl=", "storage", "cdn"]):
+                    if "1080" in text or "1080" in href or "1920" in href:
+                        qualities_dict["1080p"] = full_url
+                    elif "720" in text or "720" in href or "1280" in href:
+                        qualities_dict["720p"] = full_url
+                    elif "480" in text or "480" in href or "854" in href:
+                        qualities_dict["480p"] = full_url
                     else:
-                        qualities_dict["360p"] = u
+                        qualities_dict["360p"] = full_url
 
-            # Fallback to URL itself if nothing else matches
+            if not qualities_dict:
+                for iframe in soup.select("iframe"):
+                    iframe_src = iframe.get("src", "")
+                    if iframe_src and "ads" not in iframe_src.lower():
+                        clean_url = iframe_src if iframe_src.startswith("http") else f"https:{iframe_src}"
+                        qualities_dict["720p"] = clean_url
+
             if not qualities_dict:
                 qualities_dict["720p"] = url
 
         except Exception as e:
-            print(f"Error fetching episode qualities: {e}")
+            print(f"Error fetching qualities: {e}")
             
         return qualities_dict
 

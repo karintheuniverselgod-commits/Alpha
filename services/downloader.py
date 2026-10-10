@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import logging
 from pathlib import Path
-import yt_dlp
+from curl_cffi.requests import AsyncSession
 from config import Settings
 from services.errors import DownloadError
 
@@ -19,48 +19,37 @@ class DownloadService:
     async def download(self, url: str, anime_id: str, episode_id: str, quality: str) -> Path:
         name = hashlib.sha256(f"{anime_id}:{episode_id}:{quality}".encode()).hexdigest()[:24]
         target = self.settings.download_dir / f"{name}.mp4"
+        temp = target.with_suffix(".part")
         limit = self.settings.max_download_mb * 1024 * 1024
 
         async with self.semaphore:
-            loop = asyncio.get_running_loop()
-            
-            def _download_sync():
-                # Use yt-dlp with custom headers to handle direct stream/download tokens
-                ydl_opts = {
-                    'outtmpl': str(target.with_suffix('')),
-                    'format': 'bestvideo+bestaudio/best/best',
-                    'max_filesize': limit,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                        'Referer': 'https://www.animealpha.cc/'
-                    }
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    filename = ydl.prepare_filename(info)
-                    p = Path(filename)
-                    if not p.exists():
-                        matches = list(target.parent.glob(f"{name}*"))
-                        if matches:
-                            p = matches[0]
-                    return p
-
             try:
-                downloaded_path = await loop.run_in_executor(None, _download_sync)
-                if not downloaded_path.exists() or downloaded_path.stat().st_size < 50000:
-                    raise DownloadError("The downloaded file is empty or invalid.")
-                
-                if downloaded_path != target:
-                    if target.exists():
-                        target.unlink()
-                    downloaded_path.rename(target)
-                
+                # Use curl_cffi AsyncSession with browser impersonation to download the direct media stream
+                async with AsyncSession(impersonate="chrome", timeout=120.0) as client:
+                    response = await client.get(url, stream=True)
+                    if response.status_code != 200:
+                        raise DownloadError(f"Server returned status code {response.status_code}")
+                    
+                    total = 0
+                    with temp.open("wb") as output:
+                        # Stream the content in chunks to handle large 2GB files safely
+                        async for chunk in response.aiter_content(chunk_size=262144):
+                            if chunk:
+                                total += len(chunk)
+                                if total > limit:
+                                    raise DownloadError(f"File exceeds the {self.settings.max_download_mb} MB limit.")
+                                output.write(chunk)
+                                
+                if total < 100000:  # Less than 100KB means it's an error/HTML page
+                    raise DownloadError("The downloaded file is invalid or empty.")
+                    
+                temp.replace(target)
                 return target
+            except DownloadError:
+                temp.unlink(missing_ok=True)
+                raise
             except Exception as exc:
-                log.warning("Download failed via yt-dlp: %s", exc)
-                if target.exists():
-                    target.unlink(missing_ok=True)
+                temp.unlink(missing_ok=True)
+                log.warning("Download failed: %s", exc)
                 raise DownloadError("Unable to download this media source. Try again later.") from exc
                 

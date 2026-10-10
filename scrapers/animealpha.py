@@ -4,7 +4,7 @@ from scrapers.base import CatalogSource
 from scrapers.models import Anime, Episode
 
 class AnimeAlphaCatalogSource(CatalogSource):
-    """Live scraper for animealpha.cc with anti-block headers."""
+    """Live scraper for animealpha.cc extracting metadata, episodes, and direct video/iframe stream links."""
     def __init__(self, base_url: str = "https://www.animealpha.cc"):
         self.base_url = base_url.rstrip("/")
         self.headers = {
@@ -29,7 +29,6 @@ class AnimeAlphaCatalogSource(CatalogSource):
 
     async def search_anime(self, query: str) -> list[Anime]:
         try:
-            # Try direct search query URL pattern
             response = await self.client.get(f"{self.base_url}/search", params={"keyword": query})
             if response.status_code != 200 or "blocked" in str(response.url):
                 response = await self.client.get(f"{self.base_url}/search", params={"q": query})
@@ -106,6 +105,7 @@ class AnimeAlphaCatalogSource(CatalogSource):
             return None
 
     async def _get_qualities_for_episode(self, ep_path: str) -> dict[str, str]:
+        """Extracts direct video files (.mp4/.m3u8) or player iframe sources instead of webpage HTML."""
         qualities_dict = {}
         try:
             url = ep_path if ep_path.startswith("http") else f"{self.base_url}{ep_path}"
@@ -114,17 +114,29 @@ class AnimeAlphaCatalogSource(CatalogSource):
                 return {}
             
             ep_soup = BeautifulSoup(resp.text, "html.parser")
-            quality_map = {
-                "360": "360p", "480": "480p", "720": "720p", "1080": "1080p"
-            }
+            quality_map = {"360": "360p", "480": "480p", "720": "720p", "1080": "1080p"}
             
-            for a in ep_soup.select("a[href]"):
-                href = a.get("href", "")
-                text = a.get_text(strip=True).lower()
-                for q_key, q_name in quality_map.items():
-                    if q_key in text or q_key in href:
-                        full_url = href if href.startswith("http") else f"{self.base_url}{href}"
-                        qualities_dict[q_name] = full_url
+            # 1. Search for direct video sources or file links
+            for source in ep_soup.select("video source, a[href], source"):
+                href = source.get("href") or source.get("src", "")
+                text = source.get_text(strip=True).lower()
+                
+                if any(ext in href.lower() for ext in [".mp4", ".m3u8", "m3u8", "file="]):
+                    full_url = href if href.startswith("http") else f"{self.base_url}{href}"
+                    for q_key, q_name in quality_map.items():
+                        if q_key in text or q_key in href:
+                            qualities_dict[q_name] = full_url
+                    if not qualities_dict and ("720" in href or "hd" in href):
+                        qualities_dict["720p"] = full_url
+
+            # 2. Check for embedded players / iframes if no direct stream found
+            if not qualities_dict:
+                for iframe in ep_soup.select("iframe"):
+                    iframe_src = iframe.get("src", "")
+                    if iframe_src and not "ads" in iframe_src.lower():
+                        clean_url = iframe_src if iframe_src.startswith("http") else f"https:{iframe_src}"
+                        qualities_dict["720p"] = clean_url
+
         except Exception as e:
             print(f"Error fetching qualities: {e}")
             
